@@ -13,7 +13,7 @@ import motor.motor_asyncio
 import dns.resolver
 import traceback
 
-# Fix for Termux DNS 
+
 dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
 dns.resolver.default_resolver.nameservers = ['8.8.8.8', '8.8.4.4']
 
@@ -33,7 +33,7 @@ OXAPAY_KEY = "MEXVK4-BF57BG-GWVAA9-QS9VQI"
 SESSIONS_DIR = "sessions"
 ADMIN_PASSWORD = "amit123"
 
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://amit-test-777.loca.lt")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://sell-bot-vcxn.onrender.com")
 PORT = int(os.environ.get("PORT", 8080))
 
 # --- DB SETUP ---
