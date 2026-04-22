@@ -26,18 +26,20 @@ console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
 # --- CONFIGURATION ---
-API_ID = 35672082
-API_HASH = "a8ab964cb6c8818a0bc344d99999d705"
-BOT_TOKEN = "7908931052:AAFdpDkrcHPP2qm3vVEYwIeb_KQs2qyXkk4"
-OXAPAY_KEY = "MEXVK4-BF57BG-GWVAA9-QS9VQI"
+# --- CONFIGURATION ---
+API_ID = int(os.environ.get("API_ID", 3567))
+API_HASH = os.environ.get("API_HASH", "a8ab964cb6c88")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7908931052:AAFdpDkr")
+OXAPAY_KEY = os.environ.get("OXAPAY_KEY", "MEXVK4")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 SESSIONS_DIR = "sessions"
-ADMIN_PASSWORD = "amit123"
+
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://sell-bot-vcxn.onrender.com")
 PORT = int(os.environ.get("PORT", 8080))
 
 # --- DB SETUP ---
-MONGO_URI = "mongodb+srv://amitprojects545_db_user:XtPmY6eQTFcpHcaz@cluster0.0k08xds.mongodb.net/?appName=Cluster0"
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://amitprojects545_db_user:XtPmY6eQTFcpHcaz@cluster0.0k08xds.mongodb.net/?appName=Cluster0")
 mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 db = mongo_client["vip_bot_db"]
 
