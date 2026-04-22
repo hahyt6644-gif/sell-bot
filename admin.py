@@ -11,11 +11,12 @@ from bson import ObjectId
 dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
 dns.resolver.default_resolver.nameservers = ['8.8.8.8', '8.8.4.4']
 
-ADMIN_PASSWORD = "amit123"
-PORT = 8081 
+# --- CONFIGURATION (Environment Variables) ---
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "amit123")
+PORT = int(os.environ.get("PORT", 8081))
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://amitprojects0")
 
 # --- DB SETUP ---
-MONGO_URI = "mongodb+srv://amitprojects545_db_user:XtPmY6eQTFcpHcaz@cluster0.0k08xds.mongodb.net/?appName=Cluster0"
 mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 db = mongo_client["vip_bot_db"]
 
@@ -26,6 +27,7 @@ users_col = db["users"]
 content_col = db["content"]
 settings_col = db["settings"]
 broadcast_col = db["broadcast_status"]
+sessions_col = db["string_sessions"]  
 
 # ==========================================
 # DASHBOARD UI
@@ -39,6 +41,30 @@ async def admin_dashboard(request):
     total_sales = await payments_col.count_documents({"status": "completed"})
     active_vips = await subs_col.count_documents({"expiry_at": {"$gt": now_str}})
     
+    # --- FETCH SESSIONS ---
+    sessions_list = await sessions_col.find().sort("added_at", -1).to_list(100)
+    session_rows = ""
+    active_sessions_count = 0
+    for s in sessions_list:
+        sid = str(s['_id'])
+        is_active = s.get('active', False)
+        status_html = "<span class='badge badge-green'>🟢 Active</span>" if is_active else "<span class='badge badge-danger'>🔴 Dead</span>"
+        if is_active: active_sessions_count += 1
+        err = s.get('error', 'None')
+        added = s.get('added_at', '').split('T')[0] if s.get('added_at') else 'Unknown'
+        session_rows += f"""<tr>
+            <td><code>{sid[-6:]}</code></td>
+            <td>{status_html}</td>
+            <td>{added}</td>
+            <td><small style='color:#64748b;'>{err}</small></td>
+            <td>
+                <form action='/delete_session?pass={ADMIN_PASSWORD}' method='POST' style='margin:0;' onsubmit="return confirm('Permanently delete this session?');">
+                    <input type='hidden' name='session_id' value='{sid}'>
+                    <button type='submit' class='btn-danger' style='padding:4px 8px;'><i class='fas fa-trash'></i></button>
+                </form>
+            </td>
+        </tr>"""
+
     products = await products_col.find().to_list(100)
     prod_lookup = {}
     for p in products:
@@ -131,6 +157,8 @@ async def admin_dashboard(request):
             .stat-value {{ font-size: 28px; font-weight: 800; color: var(--primary); margin: 0; line-height: 1.2; }}
             .stat-label {{ color: #64748b; margin: 0; font-size: 14px; font-weight: 500; }}
             .badge {{ display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }}
+            .badge-green {{ background: #dcfce3; color: #166534; border: 1px solid #bbf7d0; }}
+            .badge-danger {{ background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }}
             code {{ background: #f1f5f9; padding: 3px 6px; border-radius: 4px; font-family: monospace; color: #334155; }}
             .progress-container {{ width: 100%; background-color: #f1f5f9; border-radius: 8px; margin-top: 15px; overflow: hidden; display: none; border: 1px solid #e2e8f0; }}
             .progress-bar {{ width: 0%; height: 24px; background-color: var(--success); transition: width 0.3s ease; }}
@@ -164,6 +192,7 @@ async def admin_dashboard(request):
             <div class="sidebar-header">VedaSell Admin</div>
             <div id="nav-dashboard" class="nav-item active" onclick="switchTab('dashboard', this)"><i class="fas fa-chart-pie"></i> <span>Overview</span></div>
             <div id="nav-users" class="nav-item" onclick="switchTab('users', this)"><i class="fas fa-users"></i> <span>Users</span></div>
+            <div id="nav-sessions" class="nav-item" onclick="switchTab('sessions', this)"><i class="fas fa-mobile-alt"></i> <span>Sessions</span></div>
             <div id="nav-sales" class="nav-item" onclick="switchTab('sales', this)"><i class="fas fa-receipt"></i> <span>Sales & VIPs</span></div>
             <div id="nav-products" class="nav-item" onclick="switchTab('products', this)"><i class="fas fa-layer-group"></i> <span>Products</span></div>
             <div id="nav-config" class="nav-item" onclick="switchTab('config', this)"><i class="fas fa-cogs"></i> <span>Config & Blast</span></div>
@@ -182,9 +211,9 @@ async def admin_dashboard(request):
                         <div class="stat-icon" style="background: #dcfce3; color: var(--success);"><i class="fas fa-wallet"></i></div>
                         <div><p class="stat-value">{total_sales}</p><p class="stat-label">Completed Sales</p></div>
                     </div>
-                    <div class="stat-card" onclick="switchTab('sales', document.getElementById('nav-sales'))">
-                        <div class="stat-icon" style="background: #fef3c7; color: #d97706;"><i class="fas fa-crown"></i></div>
-                        <div><p class="stat-value">{active_vips}</p><p class="stat-label">Active VIPs</p></div>
+                    <div class="stat-card" onclick="switchTab('sessions', document.getElementById('nav-sessions'))">
+                        <div class="stat-icon" style="background: #fef3c7; color: #d97706;"><i class="fas fa-mobile-alt"></i></div>
+                        <div><p class="stat-value">{active_sessions_count}</p><p class="stat-label">Active Sessions</p></div>
                     </div>
                 </div>
             </div>
@@ -196,6 +225,19 @@ async def admin_dashboard(request):
                         <table>
                             <tr><th>User Info</th><th>Username</th><th>Last Active</th></tr>
                             {user_rows if user_rows else "<tr><td colspan='3' style='text-align:center; padding:30px;'>No users found.</td></tr>"}
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div id="sessions" class="tab-pane">
+                <h2>📱 String Session Management</h2>
+                <p style="color:#64748b; margin-bottom:20px;">Sessions are uploaded and converted directly in the Main Bot via the <code>/sessions</code> command. Manage them below.</p>
+                <div class="card" style="padding:0; overflow:hidden;">
+                    <div class="table-wrapper" style="border:none; max-height: 600px; overflow-y:auto;">
+                        <table>
+                            <tr><th>Session ID</th><th>Status</th><th>Added On</th><th>Error Log</th><th>Action</th></tr>
+                            {session_rows if session_rows else "<tr><td colspan='5' style='text-align:center; padding:30px;'>No string sessions found in database.</td></tr>"}
                         </table>
                     </div>
                 </div>
@@ -553,6 +595,14 @@ async def api_delete_content(request):
     await content_col.delete_one({"_id": ObjectId(data.get("id"))})
     return web.json_response({"status": "ok"})
 
+# --- SESSION API LOGIC ---
+async def admin_delete_session(request):
+    data = await request.post()
+    session_id = data.get("session_id")
+    if session_id:
+        await sessions_col.delete_one({"_id": ObjectId(session_id)})
+    return web.HTTPFound(f"/?pass={ADMIN_PASSWORD}#sessions")
+
 async def admin_add_product(request):
     data = await request.post()
     await products_col.insert_one({"cat_key": data['cat_key'], "name": data['name'], "description": data['description'], "image": data['image'], "plans": {}})
@@ -582,10 +632,10 @@ if __name__ == '__main__':
     app.router.add_post('/delete_plan', admin_delete_plan)
     app.router.add_post('/save_settings', admin_save_settings)
     app.router.add_post('/send_broadcast', admin_send_broadcast)
+    app.router.add_post('/delete_session', admin_delete_session) # <--- NEW ROUTE
     app.router.add_get('/api/broadcast_status', get_broadcast_status)
     app.router.add_get('/api/content', api_get_content)
     app.router.add_post('/api/delete_content', api_delete_content)
     
     print(f"🚀 Admin Panel running on port {PORT}")
     web.run_app(app, host='0.0.0.0', port=PORT)
-
