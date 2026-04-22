@@ -1,0 +1,5 @@
+aiohttp
+motor
+dnspython
+telethon
+cryptography
