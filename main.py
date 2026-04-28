@@ -66,6 +66,26 @@ async def init_db():
             await products_col.insert_many(default_categories)
     except Exception as e:
         logger.error(f"Error initializing DB: {e}\n{traceback.format_exc()}")
+# Create a global queue for mirroring tasks
+mirror_queue = asyncio.Queue()
+
+async def mirror_worker():
+    """Background worker that handles mirroring one by one to prevent crashes."""
+    logger.info("🚀 Mirror Worker started and waiting for tasks...")
+    while True:
+        # Get a 'task' from the queue
+        task = await mirror_queue.get()
+        try:
+            # Unpack task data
+            admin_uid, ctype, fid, token, text, cat, wait_mid = task
+            logger.info(f"🔄 Worker processing mirror for: {fid[:10]}...")
+            # Run the heavy mirroring logic
+            await mirror_content_background(admin_uid, ctype, fid, token, text, cat, wait_mid)
+        except Exception as e:
+            logger.error(f"❌ Worker Error: {e}")
+        finally:
+            # Tell the queue that the task is finished
+            mirror_queue.task_done()
 
 async def get_categories():
     try:
@@ -582,24 +602,24 @@ async def process_content_update(update, ctoken):
         if "message" in update:
             msg = update["message"]
             uid = msg["chat"]["id"]
-            text = msg.get("text", "")
             
             admin_ids = await get_admin_ids()
 
             if uid in admin_ids:
                 active_session = await bulk_sessions_col.find_one({"admin_id": uid, "active": True})
 
-                if text.startswith("/bulkmodestart "):
-                    cat = text.split(" ")[1]
-                    await bulk_sessions_col.update_one({"admin_id": uid}, {"$set": {"category": cat, "active": True}}, upsert=True)
-                    await api_call("sendMessage", {"chat_id": uid, "text": f"🟢 **Bulk Mode Started: `{cat}`**\n\nForward media to this bot. It will be saved and mirrored."}, token=ctoken)
-                    return
-                elif text == "/bulkmodeend":
-                    await bulk_sessions_col.update_one({"admin_id": uid}, {"$set": {"active": False}})
-                    await api_call("sendMessage", {"chat_id": uid, "text": "🔴 Bulk Mode Ended."}, token=ctoken)
-                    return
+                if text := msg.get("text", ""):
+                    if text.startswith("/bulkmodestart "):
+                        cat = text.split(" ")[1]
+                        await bulk_sessions_col.update_one({"admin_id": uid}, {"$set": {"category": cat, "active": True}}, upsert=True)
+                        await api_call("sendMessage", {"chat_id": uid, "text": f"🟢 **Bulk Mode Started: `{cat}`**\n\nForward media now. I will save them instantly and mirror in the background.", "parse_mode": "Markdown"}, token=ctoken)
+                        return
+                    elif text == "/bulkmodeend":
+                        await bulk_sessions_col.update_one({"admin_id": uid}, {"$set": {"active": False}})
+                        await api_call("sendMessage", {"chat_id": uid, "text": "🔴 Bulk Mode Ended.", "parse_mode": "Markdown"}, token=ctoken)
+                        return
                     
-                elif active_session and not text.startswith("/"):
+                if active_session and not msg.get("text", "").startswith("/"):
                     ctype = "text"
                     fid = None
                     text_content = msg.get("text") or msg.get("caption", "")
@@ -608,15 +628,26 @@ async def process_content_update(update, ctoken):
                     elif "video" in msg: ctype = "video"; fid = msg["video"]["file_id"]
                     elif "document" in msg: ctype = "document"; fid = msg["document"]["file_id"]
 
-                    wait_msg = await api_call("sendMessage", {"chat_id": uid, "text": f"⚡ Fast Saving {ctype}..."}, token=ctoken)
-                    wait_mid = wait_msg.get("result", {}).get("message_id")
+                    # ⚡ STEP 1: INSTANT SAVE TO DB
+                    # We save immediately so Telegram gets a 200 OK response right away.
+                    content_doc = {
+                        "category": active_session["category"], 
+                        "type": ctype, 
+                        "text": text_content, 
+                        "primary_token": ctoken, 
+                        "file_id": fid,
+                        "mirrors": [{"token": ctoken, "file_id": fid}],
+                        "added_at": datetime.now().isoformat()
+                    }
+                    await content_col.insert_one(content_doc) #
 
-                    asyncio.create_task(mirror_content_background(
-                        admin_uid=uid, ctype=ctype, primary_file_id=fid, 
-                        primary_token=ctoken, text_content=text_content, cat=active_session["category"],
-                        wait_mid=wait_mid
-                    ))
-    except Exception as e: logger.error(f"Content process error: {e}")
+                    # 🛠 STEP 2: ADD TO QUEUE
+                    # If it's media, put it in the queue for the background worker to mirror.
+                    if fid:
+                        await mirror_queue.put((uid, ctype, fid, ctoken, text_content, active_session["category"], None))
+                        
+    except Exception as e: 
+        logger.error(f"Fast Save Error: {e}")
 
 # ==========================================
 # AIOHTTP SERVER ROUTES
@@ -653,7 +684,9 @@ async def handle_oxapay_webhook(request):
 
 async def start_background_tasks(app):
     await init_db()
+    asyncio.create_task(mirror_worker()) #
     
+    settings = await settings_col.find_one({"_id": "global_settings"}) or {}
     settings = await settings_col.find_one({"_id": "global_settings"}) or {}
     m_token = settings.get("bot_token", BOT_TOKEN).strip()
     p_token = settings.get("payment_bot_token", "").strip()
